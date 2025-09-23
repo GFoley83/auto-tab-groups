@@ -221,3 +221,92 @@ test("TabGroupService handles pinned tabs correctly", async ({ page }) => {
   const groupCalledForUnpinned = await page.evaluate(() => window.groupCalledForUnpinned)
   expect(groupCalledForUnpinned).toBe(true)
 })
+
+test("TabGroupService collapses inactive groups correctly", async ({ page }) => {
+  await page.setContent(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <title>Collapse Inactive Groups Test</title>
+    </head>
+    <body>
+      <script type="module">
+        // Mock the browser API for testing inactive group collapse
+        let updateCalls = []
+        
+        globalThis.browserAPI = {
+          tabs: {
+            get: async (tabId) => {
+              if (tabId === 1) {
+                return { id: 1, url: 'https://github.com', windowId: 1, groupId: 1 }
+              } else if (tabId === 2) {
+                return { id: 2, url: 'https://example.com', windowId: 1, groupId: 2 }
+              }
+            }
+          },
+          tabGroups: {
+            query: async () => [
+              { id: 1, title: 'github.com', collapsed: false },
+              { id: 2, title: 'example.com', collapsed: false },
+              { id: 3, title: 'test.com', collapsed: false }
+            ],
+            update: async (groupId, props) => {
+              updateCalls.push({ groupId, props })
+              return { id: groupId, ...props }
+            },
+            TAB_GROUP_ID_NONE: -1
+          },
+          windows: {
+            WINDOW_ID_CURRENT: -2
+          }
+        }
+
+        // Mock other required modules
+        globalThis.tabGroupState = {
+          autoGroupingEnabled: true,
+          collapseInactiveGroups: true,
+          groupByMode: "domain",
+          customRules: new Map()
+        }
+
+        // Load the service and test
+        import('./src/services/TabGroupService.js').then(async (module) => {
+          const service = module.tabGroupService
+          
+          // Test collapsing inactive groups when tab 1 (in group 1) is active
+          updateCalls = []
+          const result = await service.collapseInactiveGroups(1)
+          
+          window.collapseResult = result
+          window.updateCalls = updateCalls
+          window.testCompleted = true
+        }).catch((error) => {
+          window.testError = error.message
+        })
+      </script>
+    </body>
+    </html>
+  `)
+
+  // Wait for test to complete
+  await page.waitForFunction(() => window.testCompleted || window.testError, { timeout: 5000 })
+
+  const testError = await page.evaluate(() => window.testError)
+  expect(testError).toBeUndefined()
+
+  // Verify the method returned success
+  const collapseResult = await page.evaluate(() => window.collapseResult)
+  expect(collapseResult).toBe(true)
+
+  // Verify that inactive groups were collapsed (groups 2 and 3), but not the active group (group 1)
+  const updateCalls = await page.evaluate(() => window.updateCalls)
+  expect(updateCalls).toHaveLength(2)
+
+  // Check that groups 2 and 3 were collapsed
+  const collapsedGroupIds = updateCalls.map(call => call.groupId).sort()
+  expect(collapsedGroupIds).toEqual([2, 3])
+
+  // Check that they were set to collapsed: true
+  const allCollapsed = updateCalls.every(call => call.props.collapsed === true)
+  expect(allCollapsed).toBe(true)
+})

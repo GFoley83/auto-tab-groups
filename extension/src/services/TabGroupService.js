@@ -943,6 +943,63 @@ class TabGroupServiceSimplified {
     }
   }
 
+  /**
+   * Collapses all tab groups except the one containing the currently active tab
+   * @param {number} activeTabId - The currently active tab ID
+   * @returns {Promise<boolean>} True if successful
+   */
+  async collapseInactiveGroups(activeTabId) {
+    try {
+      console.log(`[TabGroupService] Collapsing inactive groups (active tab: ${activeTabId})`)
+
+      // Get all tab groups in the current window
+      const groups = await browserAPI.tabGroups.query({
+        windowId: browserAPI.windows.WINDOW_ID_CURRENT
+      })
+
+      if (groups.length === 0) {
+        console.log(`[TabGroupService] No groups found to collapse`)
+        return true
+      }
+
+      // Get the active tab to determine which group (if any) it belongs to
+      const activeTab = await browserAPI.tabs.get(activeTabId)
+      let activeTabGroupId = null
+
+      if (activeTab && activeTab.groupId !== browserAPI.tabGroups.TAB_GROUP_ID_NONE) {
+        activeTabGroupId = activeTab.groupId
+        console.log(`[TabGroupService] Active tab ${activeTabId} is in group ${activeTabGroupId}`)
+      }
+
+      // Collapse all groups except the active one
+      for (const group of groups) {
+        try {
+          // Skip the group containing the active tab
+          if (group.id === activeTabGroupId) {
+            console.log(`[TabGroupService] Skipping group ${group.id} containing active tab`)
+            continue
+          }
+
+          // Only collapse if the group is not already collapsed
+          if (!group.collapsed) {
+            await browserAPI.tabGroups.update(group.id, {
+              collapsed: true
+            })
+            console.log(`[TabGroupService] Collapsed inactive group ${group.id} ("${group.title}")`)
+          }
+        } catch (updateError) {
+          console.warn(`[TabGroupService] Failed to collapse group ${group.id}:`, updateError)
+        }
+      }
+
+      console.log(`[TabGroupService] Finished collapsing inactive groups`)
+      return true
+    } catch (error) {
+      console.error(`[TabGroupService] Error collapsing inactive groups:`, error)
+      return false
+    }
+  }
+
   // Legacy method aliases for backward compatibility
   async groupTabsWithRules() {
     return await this.groupAllTabs()
