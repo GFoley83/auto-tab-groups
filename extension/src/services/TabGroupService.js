@@ -944,6 +944,41 @@ class TabGroupServiceSimplified {
   }
 
   /**
+   * Update tab group with Chrome-specific retry logic if needed
+   * @param {number} groupId - The group ID to update
+   * @param {Object} updateProps - Properties to update
+   * @returns {Promise<void>}
+   */
+  async updateTabGroup(groupId, updateProps) {
+    // Check if we're in Chrome
+    const isChrome = typeof browser === "undefined" && typeof chrome !== "undefined"
+    
+    if (!isChrome) {
+      // Firefox: Direct update, no retry needed
+      await browserAPI.tabGroups.update(groupId, updateProps)
+      return
+    }
+    
+    // Chrome: Use retry logic for "cannot be edited" errors
+    const maxRetries = 3
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await browserAPI.tabGroups.update(groupId, updateProps)
+        return // Success, exit retry loop
+      } catch (error) {
+        if (error.message.includes("cannot be edited right now") && attempt < maxRetries) {
+          // Chrome-specific error: wait and retry with exponential backoff
+          const delay = Math.min(100 * Math.pow(2, attempt - 1), 1000) // 100ms, 200ms, 400ms max
+          console.log(`[TabGroupService] Chrome retry ${attempt}/${maxRetries} for group ${groupId} in ${delay}ms`)
+          await new Promise(resolve => setTimeout(resolve, delay))
+        } else {
+          throw error // Re-throw if not retryable or max attempts reached
+        }
+      }
+    }
+  }
+
+  /**
    * Collapses all tab groups except the one containing the currently active tab
    * @param {number} activeTabId - The currently active tab ID
    * @returns {Promise<boolean>} True if successful
@@ -971,22 +1006,20 @@ class TabGroupServiceSimplified {
         console.log(`[TabGroupService] Active tab ${activeTabId} is in group ${activeTabGroupId}`)
       }
 
-      // Collapse all groups except the active one
-      for (const group of groups) {
-        try {
-          // Skip the group containing the active tab
-          if (group.id === activeTabGroupId) {
-            console.log(`[TabGroupService] Skipping group ${group.id} containing active tab`)
-            continue
-          }
+      // Filter groups that need to be collapsed (exclude active group)
+      const groupsToCollapse = groups.filter(group => {
+        if (group.id === activeTabGroupId) {
+          console.log(`[TabGroupService] Skipping group ${group.id} containing active tab`)
+          return false
+        }
+        return !group.collapsed // Only include uncollapsed groups
+      })
 
-          // Only collapse if the group is not already collapsed
-          if (!group.collapsed) {
-            await browserAPI.tabGroups.update(group.id, {
-              collapsed: true
-            })
-            console.log(`[TabGroupService] Collapsed inactive group ${group.id} ("${group.title}")`)
-          }
+      // Collapse all inactive groups with retry logic
+      for (const group of groupsToCollapse) {
+        try {
+          await this.updateTabGroup(group.id, { collapsed: true })
+          console.log(`[TabGroupService] Collapsed inactive group ${group.id} ("${group.title}")`)
         } catch (updateError) {
           console.warn(`[TabGroupService] Failed to collapse group ${group.id}:`, updateError)
         }
